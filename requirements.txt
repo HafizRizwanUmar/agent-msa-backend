@@ -3,7 +3,6 @@ flask-cors
 google-generativeai
 requests
 python-dotenv
-sentence-transformers
 rank_bm25
-scikit-learn
 beautifulsoup4
+firebase-admin

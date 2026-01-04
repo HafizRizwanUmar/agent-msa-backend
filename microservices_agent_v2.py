@@ -3,14 +3,17 @@ import html
 import re
 import time
 import os
-import numpy as np
+import datetime
 from datetime import datetime
-from dotenv import load_dotenv
-
-load_dotenv()
-from sentence_transformers import SentenceTransformer, util
 from rank_bm25 import BM25Okapi
-from sklearn.metrics.pairwise import cosine_similarity
+
+# Optional ML Imports (Lite Mode for Vercel)
+try:
+    from sentence_transformers import SentenceTransformer, util
+    SBERT_AVAILABLE = True
+except ImportError:
+    SBERT_AVAILABLE = False
+    print("Notice: SBERT not available. Running in Lite Mode.")
 
 import firebase_admin
 from firebase_admin import credentials
@@ -24,7 +27,17 @@ class AgentMSA:
         self.db = None
         try:
             if not firebase_admin._apps:
-                cred = credentials.Certificate("serviceAccountKey.json")
+                # Check for Environment Variable (Production/Vercel)
+                if os.environ.get("FIREBASE_CREDENTIALS"):
+                    import json
+                    cred_dict = json.loads(os.environ.get("FIREBASE_CREDENTIALS"))
+                    cred = credentials.Certificate(cred_dict)
+                # Check for Local File (Development)
+                elif os.path.exists("serviceAccountKey.json"):
+                    cred = credentials.Certificate("serviceAccountKey.json")
+                else:
+                    raise FileNotFoundError("No serviceAccountKey.json or FIREBASE_CREDENTIALS found.")
+                
                 firebase_admin.initialize_app(cred)
             self.db = firestore.client()
             print("Knowledge Base (Firestore) connected.")
@@ -32,13 +45,17 @@ class AgentMSA:
             print(f"Warning: Could not connect to Knowledge Base: {e}")
 
         # 2. Local AI Setup
-        print("Loading SBERT model...")
-        try:
-            self.encoder = SentenceTransformer('all-MiniLM-L6-v2')
-            print("SBERT model loaded.")
-        except Exception as e:
-            print(f"Warning: Could not load SBERT model (Offline Mode): {e}")
-            self.encoder = None
+        if SBERT_AVAILABLE:
+            print("Loading SBERT model...")
+            try:
+                self.encoder = SentenceTransformer('all-MiniLM-L6-v2')
+                print("SBERT model loaded.")
+            except Exception as e:
+                print(f"Warning: Could not load SBERT model: {e}")
+                self.encoder = None
+        else:
+             print("SBERT disabled (Lite Mode).")
+             self.encoder = None
             
         # Network Setup
         self.session = requests.Session()
