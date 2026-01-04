@@ -12,6 +12,10 @@ CORS(app)  # Enable CORS for all routes
 # Initialize Agent
 agent = AgentMSA()
 
+@app.route('/', methods=['GET'])
+def home():
+    return jsonify({"status": "running", "message": "AgentMSA Backend is Online (Lite Mode)"})
+
 @app.route('/api/ask', methods=['POST'])
 def ask():
     data = request.json
