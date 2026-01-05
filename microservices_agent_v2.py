@@ -63,6 +63,53 @@ class AgentMSA:
             "User-Agent": "AgentMSA-Research/1.0 (Educational)"
         })
 
+    # STRICT DOMAIN GUARDRAILS
+    DOMAIN_KEYWORDS = {
+        # Core Architecture
+        "microservice", "microservices", "monolith", "monolithic", "distributed", "architecture", "soa",
+        "service", "services", "backend", "frontend", "api", "apis", "endpoint", "rest", "graphql", "grpc",
+        
+        # Communication & pattern
+        "gateway", "proxy", "load balancer", "service discovery", "circuit breaker", "bulkhead", "retry",
+        "sidecar", "mesh", "istio", "envoy", "consul", "eureka", "rabbitmq", "kafka", "queue", "topic",
+        "event", "event-driven", "messaging", "async", "synchronous", "sagas", "cqrs", "event sourcing",
+        
+        # Infrastructure & DevOps
+        "docker", "container", "containers", "kubernetes", "k8s", "pod", "node", "cluster", "orchestration",
+        "helm", "deployment", "scaling", "scalability", "autoscaling", "replica", "cloud", "aws", "azure", 
+        "gcp", "serverless", "lambda", "observability", "monitoring", "logging", "tracing", "prometheus", 
+        "grafana", "jaeger", "zipkin", "elk", "manager", "worker",
+        
+        # Concepts
+        "latency", "throughput", "resilience", "fault tolerance", "availability", "consistency", "cap theorem",
+        "database", "db", "sql", "nosql", "polyglot", "persistence", "transaction", "isolation", "stateful", 
+        "stateless", "auth", "authentication", "authorization", "oauth", "jwt", "token", "security",
+        "upstream", "downstream", "workflow", "orchestrator", "choreography", "pattern", "practices", "best practices"
+    }
+
+    def validate_intent(self, query):
+        """Strictly validate if the query belongs to the microservices domain."""
+        query_lower = query.lower()
+        
+        # 1. Check for whole word matches against the whitelist
+        # We replace punctuation with spaces to ensure clean tokenization
+        clean_query = re.sub(r'[^\w\s]', ' ', query_lower)
+        query_words = set(clean_query.split())
+        
+        # 2. Check overlap
+        # We check both strict word matches AND if multi-word keywords (like "circuit breaker") appear in the raw string
+        
+        # Check single words
+        if not query_words.isdisjoint(self.DOMAIN_KEYWORDS):
+            return True
+            
+        # Check multi-word phrases from our set
+        for kw in self.DOMAIN_KEYWORDS:
+            if " " in kw and kw in query_lower:
+                return True
+                
+        return False
+
     def clean_html(self, raw_html):
         """Remove HTML tags and unescape entities."""
         if not raw_html: return ""
@@ -113,15 +160,20 @@ class AgentMSA:
             # This is client-side filtering which is okay for a prototype size DB.
             docs = self.db.collection('knowledge_base').limit(50).stream()
             
-            query_parts = query.lower().split()
+            query_parts = set(re.findall(r'\w+', query.lower()))
             
             for doc in docs:
                 data = doc.to_dict()
                 title_lower = data.get('title', '').lower()
+                title_parts = set(re.findall(r'\w+', title_lower))
                 
-                # Simple keyword match ratio
-                matches = sum(1 for q in query_parts if q in title_lower)
-                if matches >= 2 or (len(query_parts) == 1 and matches == 1):
+                # Strict Set Intersection Match
+                # "hi" -> {"hi"} ... "architecture" -> {"architecture"} -> intersection is empty.
+                common = query_parts.intersection(title_parts)
+                
+                matches = len(common)
+                # require at least 50% match of query words or 2 keywords
+                if matches >= 2 or (len(query_parts) > 0 and matches == len(query_parts)):
                     results.append({
                         "title": data.get('title'),
                         "answer_text": data.get('content'),
@@ -161,13 +213,13 @@ class AgentMSA:
             data = resp.json()
             items = data.get("items", [])
             
-            # 2. Fallback: Broad Search if no specific results
-            if not items:
-                print("DEBUG: No tagged results, trying broad search...")
-                params.pop("tagged")
-                resp = self.session.get(f"{self.BASE_URL}/search/advanced", params=params, timeout=10)
-                data = resp.json()
-                items = data.get("items", [])
+            # 2. Fallback: Broad Search REMOVED to restrict scope
+            # if not items:
+            #     print("DEBUG: No tagged results, trying broad search...")
+            #     params.pop("tagged")
+            #     resp = self.session.get(f"{self.BASE_URL}/search/advanced", params=params, timeout=10)
+            #     data = resp.json()
+            #     items = data.get("items", [])
             
             print(f"DEBUG: Found {len(items)} questions.")
             return items 
@@ -320,6 +372,11 @@ class AgentMSA:
     def ask(self, user_query):
         print(f"AgentMSA: Processing query '{user_query}'...")
         
+        # 0. Strict Domain Guardrail
+        if not self.validate_intent(user_query):
+             print(f"DEBUG: Query blocked by guardrails: '{user_query}'")
+             return "I am strictly bound to answer only questions about Microservices Architecture. \n\nPlease include relevant terms (e.g., 'API', 'Docker', 'Service', 'Scaling') in your question."
+        
         all_candidates = []
         
         # 1. Search Knowledge Base First (Offline/Indexed Layer)
@@ -341,7 +398,7 @@ class AgentMSA:
         all_candidates.extend(live_candidates)
         
         if not all_candidates:
-             return "No results found."
+             return "I am bound to answer only questions about microservices. Please ask a relevant question."
         
         # 3. Rank & Verify
         ranked = self.rank_candidates(user_query, all_candidates)
