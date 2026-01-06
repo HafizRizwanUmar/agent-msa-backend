@@ -88,22 +88,86 @@ class AgentMSA:
     }
 
     def validate_intent(self, query):
-        """Strictly validate if the query belongs to the microservices domain."""
-        query_lower = query.lower()
+        """Strictly validate if the query belongs to the microservices domain using Gemini."""
+        # 0. Quick local check to save tokens and latency for greetings
+        if self.is_greeting(query):
+            print(f"DEBUG: Query '{query}' identified as greeting. Allowing.")
+            return True
         
+        return self.validate_with_gemini(query)
+
+    def is_greeting(self, query):
+        """Check if the query is a simple greeting or conversational phrase."""
+        greetings = {
+            "hi", "hello", "hey", "greetings", "good morning", "good afternoon", "good evening",
+            "how are you", "how are you doing", "what's up", "yo", "test"
+        }
+        # Check exact lower match or if it starts with a greeting (roughly)
+        q_clean = query.strip().lower()
+        # Remove punctuation
+        q_clean = re.sub(r'[^\w\s]', '', q_clean)
+        
+        if q_clean in greetings:
+            return True
+            
+        return False
+
+    def validate_with_gemini(self, query):
+        """Use Google Gemini API to classify the query."""
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            print("DEBUG: No GEMINI_API_KEY found. Falling back to keyword match.")
+            return self._validate_keywords_fallback(query)
+            
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+        
+        prompt = (f"You are a strict classifier for a Microservices Assistant.\n"
+                  f"Query: '{query}'\n"
+                  f"Is this query related to Microservices Architecture, Software Engineering, System Design, DevOps, or Cloud Infrastructure? "
+                  f"Even simple greetings like 'hi' or 'hello' should be valid to start a conversation.\n"
+                  f"Respond strictly with 'YES' or 'NO'.")
+        
+        payload = {
+            "contents": [{
+                "parts": [{"text": prompt}]
+            }]
+        }
+        
+        try:
+            response = requests.post(url, json=payload, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                # Extract text
+                # Structure: candidates[0].content.parts[0].text
+                try:
+                    answer = data["candidates"][0]["content"]["parts"][0]["text"].strip().upper()
+                    print(f"DEBUG: Gemini Validation for '{query}': {answer}")
+                    if "YES" in answer:
+                        return True
+                    else:
+                        return False
+                except (KeyError, IndexError):
+                    print("DEBUG: Unexpected Gemini response format.")
+                    return self._validate_keywords_fallback(query)
+            else:
+                print(f"DEBUG: Gemini API Error {response.status_code}: {response.text}")
+                return self._validate_keywords_fallback(query)
+        except Exception as e:
+            print(f"DEBUG: Gemini connection failed: {e}")
+            return self._validate_keywords_fallback(query)
+
+    def _validate_keywords_fallback(self, query):
+        """Legacy keyword validation as fallback."""
+        query_lower = query.lower()
+        if query_lower in ["hi", "hello", "hey", "test"]: return True
+
         # 1. Check for whole word matches against the whitelist
-        # We replace punctuation with spaces to ensure clean tokenization
         clean_query = re.sub(r'[^\w\s]', ' ', query_lower)
         query_words = set(clean_query.split())
         
-        # 2. Check overlap
-        # We check both strict word matches AND if multi-word keywords (like "circuit breaker") appear in the raw string
-        
-        # Check single words
         if not query_words.isdisjoint(self.DOMAIN_KEYWORDS):
             return True
             
-        # Check multi-word phrases from our set
         for kw in self.DOMAIN_KEYWORDS:
             if " " in kw and kw in query_lower:
                 return True
@@ -372,7 +436,14 @@ class AgentMSA:
     def ask(self, user_query):
         print(f"AgentMSA: Processing query '{user_query}'...")
         
-        # 0. Strict Domain Guardrail
+        # 0. Check for Greeting First
+        if self.is_greeting(user_query):
+             return {
+                 "synthesis": "Hi, I'm Agent MSA. I'm here to help you with Microservices Architecture.",
+                 "sources": []
+             }
+
+        # 1. Strict Domain Guardrail
         if not self.validate_intent(user_query):
              print(f"DEBUG: Query blocked by guardrails: '{user_query}'")
              return "I am strictly bound to answer only questions about Microservices Architecture. \n\nPlease include relevant terms (e.g., 'API', 'Docker', 'Service', 'Scaling') in your question."
@@ -428,6 +499,14 @@ class AgentMSA:
         }
 
 if __name__ == "__main__":
+    # Load env for local testing
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+        print("DEBUG: Environment loaded.")
+    except ImportError:
+        print("DEBUG: dotenv not found.")
+
     agent = AgentMSA()
     q = input("Query: ")
     res = agent.ask(q)
